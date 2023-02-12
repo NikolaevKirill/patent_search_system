@@ -1,9 +1,8 @@
 import time
 import asyncio
 import csv
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from aiofiles import open
 
 
 def parse_patent(html_code):
@@ -33,7 +32,7 @@ def parse_patent(html_code):
     """
 
     if html_code.text == "Документ с данным номером отсутствует":
-        return "Does not exist"
+        return [""] * 14
 
     keys_data_1 = (
         html_code.find("table", id="bib").find("tr").findAll("td")[0].findAll("p")
@@ -171,57 +170,58 @@ def parse_patent(html_code):
     ]
 
 
-async def fetch_data(url, writer):
-    start_time = time.perf_counter()
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "lxml")
-    time.sleep(3)
-    # Extract data from the parsed HTML using BeautifulSoup
-    data = parse_patent(soup)
-
-    if data == "Does not exist":
-        number = response.url.split("&")[1].split("=")[1]
-        data = [""] * 14
-        data[0] = number
-
-    await writer.writerow(data)
-    end_time = time.perf_counter()
-    print(f"Time elapsed for {url}: {end_time - start_time:0.2f} seconds")
+async def parse_page(session, url):
+    async with session.get(url) as response:
+        soup = BeautifulSoup(await response.text(), "lxml")
+        # parse the information from the page and return it
+        return parse_patent(soup)
 
 
-async def main(urls):
-    async with open("data.csv", "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        # Write the header row to the CSV file
-        await writer.writerow(
-            [
-                "number",
-                "date",
-                "quotes",
-                "authors",
-                "patent_owner",
-                "mpk",
-                "spk",
-                "country",
-                "type_of_document",
-                "title",
-                "abstract",
-                "patent_claims",
-                "patent_description",
-                "source_of_information",
-            ]
-        )
-        tasks = [fetch_data(url, writer) for url in urls]
-        for i, task in enumerate(asyncio.as_completed(tasks)):
-            await task
-            print(f"{i + 1}/{len(tasks)} tasks completed.")
+async def main(links):
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for link in links:
+            task = asyncio.ensure_future(parse_page(session, link))
+            tasks.append(task)
+            await asyncio.sleep(3)
+        parsed_data = await asyncio.gather(*tasks)
+
+    # write the parsed information to a csv file
+    with open("data.csv", "w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        header = [
+            "number",
+            "date",
+            "quotes",
+            "authors",
+            "patent_owner",
+            "mpk",
+            "spk",
+            "country",
+            "type_of_document",
+            "title",
+            "abstract",
+            "patent_claims",
+            "patent_description",
+            "source_of_information",
+        ]
+        writer.writerows([header])
+        writer.writerows(parsed_data)
 
 
 if __name__ == "__main__":
-    start_number = 2640290
-    n_batch = 30
+    start_number = 2005333
+    n_batch = 1
     links = [
         f"https://new.fips.ru/registers-doc-view/fips_servlet?DB=RUPAT&DocNumber={i}&TypeFile=html"
         for i in range(start_number, start_number + n_batch)
     ]
-    asyncio.run(main(links))
+    start_time = time.time()
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main(links))
+
+    end_time = time.time()
+    print(
+        f"Затраченное время: {round(end_time-start_time, 2)}; Количество спарсенных патентов: {n_batch}"
+    )
